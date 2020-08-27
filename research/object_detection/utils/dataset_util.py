@@ -15,7 +15,11 @@
 
 """Utility functions for creating TFRecord data sets."""
 
-import tensorflow as tf
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+
+import tensorflow.compat.v1 as tf
 
 
 def int64_feature(value):
@@ -84,5 +88,3 @@ def recursive_parse_xml_to_dict(xml):
         result[child.tag] = []
       result[child.tag].append(child_result[child.tag])
   return {xml.tag: result}
-
-

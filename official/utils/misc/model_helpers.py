@@ -20,8 +20,11 @@ from __future__ import print_function
 
 import numbers
 
+from absl import logging
 import tensorflow as tf
+
 from tensorflow.python.util import nest
+# pylint:disable=logging-format-interpolation
 
 
 def past_stop_threshold(stop_threshold, eval_metric):
@@ -48,17 +51,19 @@ def past_stop_threshold(stop_threshold, eval_metric):
                      "must be a number.")
 
   if eval_metric >= stop_threshold:
-    tf.logging.info(
-        "Stop threshold of {} was passed with metric value {}.".format(
-            stop_threshold, eval_metric))
+    logging.info("Stop threshold of {} was passed with metric value {}.".format(
+        stop_threshold, eval_metric))
     return True
 
   return False
 
 
-def generate_synthetic_data(
-    input_shape, input_value=0, input_dtype=None, label_shape=None,
-    label_value=0, label_dtype=None):
+def generate_synthetic_data(input_shape,
+                            input_value=0,
+                            input_dtype=None,
+                            label_shape=None,
+                            label_value=0,
+                            label_dtype=None):
   """Create a repeating dataset with constant values.
 
   Args:
@@ -87,7 +92,7 @@ def generate_synthetic_data(
 
 
 def apply_clean(flags_obj):
-  if flags_obj.clean and tf.gfile.Exists(flags_obj.model_dir):
-    tf.logging.info("--clean flag set. Removing existing model dir: {}".format(
-        flags_obj.model_dir))
-    tf.gfile.DeleteRecursively(flags_obj.model_dir)
+  if flags_obj.clean and tf.io.gfile.exists(flags_obj.model_dir):
+    logging.info("--clean flag set. Removing existing model dir:"
+                 " {}".format(flags_obj.model_dir))
+    tf.io.gfile.rmtree(flags_obj.model_dir)
