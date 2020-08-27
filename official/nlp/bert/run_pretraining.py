@@ -12,28 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Run masked LM/next sentence masked_lm pre-training for BERT in tf2.0."""
-
+"""Run masked LM/next sentence pre-training for BERT in TF 2.x."""
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import functools
-
+# Import libraries
 from absl import app
 from absl import flags
 from absl import logging
+import gin
 import tensorflow as tf
-
-# pylint: disable=unused-import,g-import-not-at-top,redefined-outer-name,reimported
-from official.modeling import model_training_utils
-from official.nlp import bert_modeling as modeling
-from official.nlp import bert_models
+from official.modeling import performance
 from official.nlp import optimization
+from official.nlp.bert import bert_models
 from official.nlp.bert import common_flags
+from official.nlp.bert import configs
 from official.nlp.bert import input_pipeline
-from official.nlp.bert import model_saving_utils
-from official.utils.misc import tpu_lib
+from official.nlp.bert import model_training_utils
+from official.utils.misc import distribution_utils
+
 
 flags.DEFINE_string('input_files', None,
                     'File path to retrieve training data for pre-training.')
@@ -50,61 +48,50 @@ flags.DEFINE_integer('num_steps_per_epoch', 1000,
                      'Total number of training steps to run per epoch.')
 flags.DEFINE_float('warmup_steps', 10000,
                    'Warmup steps for Adam weight decay optimizer.')
+flags.DEFINE_bool('use_next_sentence_label', True,
+                  'Whether to use next sentence label to compute final loss.')
+flags.DEFINE_bool('train_summary_interval', 0, 'Step interval for training '
+                  'summaries. If the value is a negative number, '
+                  'then training summaries are not enabled.')
 
 common_flags.define_common_bert_flags()
 
 FLAGS = flags.FLAGS
 
 
-def get_pretrain_input_data(input_file_pattern, seq_length,
-                            max_predictions_per_seq, batch_size, strategy):
+def get_pretrain_dataset_fn(input_file_pattern, seq_length,
+                            max_predictions_per_seq, global_batch_size,
+                            use_next_sentence_label=True):
   """Returns input dataset from input file string."""
-
-  # When using TPU pods, we need to clone dataset across
-  # workers and need to pass in function that returns the dataset rather
-  # than passing dataset instance itself.
-  use_dataset_fn = isinstance(strategy, tf.distribute.experimental.TPUStrategy)
-  if use_dataset_fn:
-    if batch_size % strategy.num_replicas_in_sync != 0:
-      raise ValueError(
-          'Batch size must be divisible by number of replicas : {}'.format(
-              strategy.num_replicas_in_sync))
-
-    # As auto rebatching is not supported in
-    # `experimental_distribute_datasets_from_function()` API, which is
-    # required when cloning dataset to multiple workers in eager mode,
-    # we use per-replica batch size.
-    batch_size = int(batch_size / strategy.num_replicas_in_sync)
-
   def _dataset_fn(ctx=None):
     """Returns tf.data.Dataset for distributed BERT pretraining."""
-    input_files = []
-    for input_pattern in input_file_pattern.split(','):
-      input_files.extend(tf.io.gfile.glob(input_pattern))
-
+    input_patterns = input_file_pattern.split(',')
+    batch_size = ctx.get_per_replica_batch_size(global_batch_size)
     train_dataset = input_pipeline.create_pretrain_dataset(
-        input_files,
+        input_patterns,
         seq_length,
         max_predictions_per_seq,
         batch_size,
         is_training=True,
-        input_pipeline_context=ctx)
+        input_pipeline_context=ctx,
+        use_next_sentence_label=use_next_sentence_label)
     return train_dataset
 
-  return _dataset_fn if use_dataset_fn else _dataset_fn()
+  return _dataset_fn
 
 
-def get_loss_fn(loss_factor=1.0):
+def get_loss_fn():
   """Returns loss function for BERT pretraining."""
 
   def _bert_pretrain_loss_fn(unused_labels, losses, **unused_args):
-    return tf.keras.backend.mean(losses) * loss_factor
+    return tf.reduce_mean(losses)
 
   return _bert_pretrain_loss_fn
 
 
 def run_customized_training(strategy,
                             bert_config,
+                            init_checkpoint,
                             max_seq_length,
                             max_predictions_per_seq,
                             model_dir,
@@ -113,67 +100,69 @@ def run_customized_training(strategy,
                             epochs,
                             initial_lr,
                             warmup_steps,
+                            end_lr,
+                            optimizer_type,
                             input_files,
-                            train_batch_size):
+                            train_batch_size,
+                            use_next_sentence_label=True,
+                            train_summary_interval=0,
+                            custom_callbacks=None):
   """Run BERT pretrain model training using low-level API."""
 
-  train_input_fn = functools.partial(get_pretrain_input_data, input_files,
-                                     max_seq_length, max_predictions_per_seq,
-                                     train_batch_size, strategy)
+  train_input_fn = get_pretrain_dataset_fn(input_files, max_seq_length,
+                                           max_predictions_per_seq,
+                                           train_batch_size,
+                                           use_next_sentence_label)
 
   def _get_pretrain_model():
     """Gets a pretraining model."""
     pretrain_model, core_model = bert_models.pretrain_model(
-        bert_config, max_seq_length, max_predictions_per_seq)
-    pretrain_model.optimizer = optimization.create_optimizer(
-        initial_lr, steps_per_epoch * epochs, warmup_steps)
-    if FLAGS.fp16_implementation == 'graph_rewrite':
-      # Note: when flags_obj.fp16_implementation == "graph_rewrite", dtype as
-      # determined by flags_core.get_tf_dtype(flags_obj) would be 'float32'
-      # which will ensure tf.compat.v2.keras.mixed_precision and
-      # tf.train.experimental.enable_mixed_precision_graph_rewrite do not double
-      # up.
-      pretrain_model.optimizer = tf.train.experimental.enable_mixed_precision_graph_rewrite(
-          pretrain_model.optimizer)
+        bert_config, max_seq_length, max_predictions_per_seq,
+        use_next_sentence_label=use_next_sentence_label)
+    optimizer = optimization.create_optimizer(
+        initial_lr, steps_per_epoch * epochs, warmup_steps,
+        end_lr, optimizer_type)
+    pretrain_model.optimizer = performance.configure_optimizer(
+        optimizer,
+        use_float16=common_flags.use_float16(),
+        use_graph_rewrite=common_flags.use_graph_rewrite())
     return pretrain_model, core_model
 
   trained_model = model_training_utils.run_customized_training_loop(
       strategy=strategy,
       model_fn=_get_pretrain_model,
-      loss_fn=get_loss_fn(
-          loss_factor=1.0 /
-          strategy.num_replicas_in_sync if FLAGS.scale_loss else 1.0),
+      loss_fn=get_loss_fn(),
+      scale_loss=FLAGS.scale_loss,
       model_dir=model_dir,
+      init_checkpoint=init_checkpoint,
       train_input_fn=train_input_fn,
       steps_per_epoch=steps_per_epoch,
       steps_per_loop=steps_per_loop,
-      epochs=epochs)
+      epochs=epochs,
+      sub_model_export_name='pretrained/bert_model',
+      train_summary_interval=train_summary_interval,
+      custom_callbacks=custom_callbacks)
 
-  # Creates the BERT core model outside distribution strategy scope.
-  _, core_model = bert_models.pretrain_model(bert_config, max_seq_length,
-                                             max_predictions_per_seq)
-
-  # Restores the core model from model checkpoints and get a new checkpoint only
-  # contains the core model.
-  model_saving_utils.export_pretraining_checkpoint(
-      checkpoint_dir=model_dir, model=core_model)
   return trained_model
 
 
-def run_bert_pretrain(strategy):
+def run_bert_pretrain(strategy, custom_callbacks=None):
   """Runs BERT pre-training."""
 
-  bert_config = modeling.BertConfig.from_json_file(FLAGS.bert_config_file)
+  bert_config = configs.BertConfig.from_json_file(FLAGS.bert_config_file)
   if not strategy:
     raise ValueError('Distribution strategy is not specified.')
 
   # Runs customized training loop.
-  logging.info('Training using customized training loop TF 2.0 with distrubuted'
+  logging.info('Training using customized training loop TF 2.0 with distributed'
                'strategy.')
+
+  performance.set_mixed_precision_policy(common_flags.dtype())
 
   return run_customized_training(
       strategy,
       bert_config,
+      FLAGS.init_checkpoint,  # Used to initialize only the BERT submodel.
       FLAGS.max_seq_length,
       FLAGS.max_predictions_per_seq,
       FLAGS.model_dir,
@@ -182,25 +171,28 @@ def run_bert_pretrain(strategy):
       FLAGS.num_train_epochs,
       FLAGS.learning_rate,
       FLAGS.warmup_steps,
+      FLAGS.end_lr,
+      FLAGS.optimizer_type,
       FLAGS.input_files,
-      FLAGS.train_batch_size)
+      FLAGS.train_batch_size,
+      FLAGS.use_next_sentence_label,
+      FLAGS.train_summary_interval,
+      custom_callbacks=custom_callbacks)
 
 
 def main(_):
-  # Users should always run this script under TF 2.x
-  assert tf.version.VERSION.startswith('2.')
-
+  gin.parse_config_files_and_bindings(FLAGS.gin_file, FLAGS.gin_param)
   if not FLAGS.model_dir:
     FLAGS.model_dir = '/tmp/bert20/'
-  strategy = None
-  if FLAGS.strategy_type == 'mirror':
-    strategy = tf.distribute.MirroredStrategy()
-  elif FLAGS.strategy_type == 'tpu':
-    cluster_resolver = tpu_lib.tpu_initialize(FLAGS.tpu)
-    strategy = tf.distribute.experimental.TPUStrategy(cluster_resolver)
-  else:
-    raise ValueError('The distribution strategy type is not supported: %s' %
-                     FLAGS.strategy_type)
+  # Configures cluster spec for multi-worker distribution strategy.
+  if FLAGS.num_gpus > 0:
+    _ = distribution_utils.configure_cluster(FLAGS.worker_hosts,
+                                             FLAGS.task_index)
+  strategy = distribution_utils.get_distribution_strategy(
+      distribution_strategy=FLAGS.distribution_strategy,
+      num_gpus=FLAGS.num_gpus,
+      all_reduce_alg=FLAGS.all_reduce_alg,
+      tpu_address=FLAGS.tpu)
   if strategy:
     print('***** Number of cores used : ', strategy.num_replicas_in_sync)
 

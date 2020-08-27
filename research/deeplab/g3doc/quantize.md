@@ -42,7 +42,6 @@ python deeplab/train.py \
     --train_batch_size=8 \
     --base_learning_rate=3e-5 \
     --dataset="pascal_voc_seg" \
-    --initialize_last_layer \
     --quantize_delay_step=0 \
     --tf_initial_checkpoint=${PATH_TO_TRAINED_FLOAT_MODEL} \
     --train_logdir=${PATH_TO_TRAIN_DIR} \
@@ -65,18 +64,12 @@ python deeplab/export_model.py \
 Commandline below shows how to convert exported graphdef to TFlite model.
 
 ```
-tflite_convert \
-  --graph_def_file=${OUTPUT_DIR}/frozen_inference_graph.pb \
-  --output_file=${OUTPUT_DIR}/frozen_inference_graph.tflite \
-  --output_format=TFLITE \
-  --input_shape=1,513,513,3 \
-  --input_arrays="MobilenetV2/MobilenetV2/input" \
-  --inference_type=QUANTIZED_UINT8 \
-  --inference_input_type=QUANTIZED_UINT8 \
-  --std_dev_values=128 \
-  --mean_values=128 \
-  --change_concat_input_ranges=true \
-  --output_arrays="ArgMax"
+# From tensorflow/models/research/
+python deeplab/convert_to_tflite.py \
+  --quantized_graph_def_path=${OUTPUT_DIR}/frozen_inference_graph.pb \
+  --input_tensor_name=MobilenetV2/MobilenetV2/input:0 \
+  --output_tflite_path=${OUTPUT_DIR}/frozen_inference_graph.tflite \
+  --test_image_path=${PATH_TO_TEST_IMAGE}
 ```
 
 **[Important]** Note that converted model expects 513x513 RGB input and doesn't
@@ -98,12 +91,12 @@ For quantized (8bit) model, un-tar'ed directory includes:
 
 *   a converted TFlite FlatBuffer file (frozen_inference_graph.tflite)
 
-Checkpoint name                                                                                                                              | Eval OS | Eval scales | Left-right Flip | Multiply-Adds | Quantize | PASCAL mIOU  | File Size
--------------------------------------------------------------------------------------------------------------------------------------------- | :-----: | :---------: | :-------------: | :-----------: | :------: | :----------: | :-------:
-[mobilenetv2_dm05_coco_voc_trainaug](http://download.tensorflow.org/models/deeplabv3_mnv2_dm05_pascal_trainaug_2018_10_01.tar.gz)            | 16      | [1.0]       | No              | 0.88B         | No       | 70.19% (val) | 7.6MB
-[mobilenetv2_dm05_coco_voc_trainaug_8bit](http://download.tensorflow.org/models/deeplabv3_mnv2_dm05_pascal_train_aug_8bit_2019_04_26.tar.gz) | 16      | [1.0]       | No              | 0.88B         | Yes      | 69.65% (val) | 8.2MB
-[mobilenetv2_coco_voc_trainaug](http://download.tensorflow.org/models/deeplabv3_mnv2_pascal_train_aug_2018_01_29.tar.gz)                     | 16      | [1.0]       | No              | 2.75B         | No       | 75.32% (val) | 23MB
-[mobilenetv2_coco_voc_trainaug_8bit](http://download.tensorflow.org/models/deeplabv3_mnv2_pascal_train_aug_8bit_2019_04_26.tar.gz)           | 16      | [1.0]       | No              | 2.75B         | Yes      | 74.26% (val) | 24MB
+Checkpoint name                                                                                                                              | Eval OS | Eval scales | Left-right Flip | Multiply-Adds | Quantize | PASCAL mIOU  | Folder Size | TFLite File Size
+-------------------------------------------------------------------------------------------------------------------------------------------- | :-----: | :---------: | :-------------: | :-----------: | :------: | :----------: | :-------: | :-------:
+[mobilenetv2_dm05_coco_voc_trainaug](http://download.tensorflow.org/models/deeplabv3_mnv2_dm05_pascal_trainaug_2018_10_01.tar.gz)            | 16      | [1.0]       | No              | 0.88B         | No       | 70.19% (val) | 7.6MB | N/A
+[mobilenetv2_dm05_coco_voc_trainaug_8bit](http://download.tensorflow.org/models/deeplabv3_mnv2_dm05_pascal_train_aug_8bit_2019_04_26.tar.gz) | 16      | [1.0]       | No              | 0.88B         | Yes      | 69.65% (val) | 8.2MB | 751.1KB
+[mobilenetv2_coco_voc_trainaug](http://download.tensorflow.org/models/deeplabv3_mnv2_pascal_train_aug_2018_01_29.tar.gz)                     | 16      | [1.0]       | No              | 2.75B         | No       | 75.32% (val) | 23MB  | N/A
+[mobilenetv2_coco_voc_trainaug_8bit](http://download.tensorflow.org/models/deeplabv3_mnv2_pascal_train_aug_8bit_2019_04_26.tar.gz)           | 16      | [1.0]       | No              | 2.75B         | Yes      | 74.26% (val) | 24MB  | 2.2MB
 
 Note that you might need the nightly build of TensorFlow (see
 [here](https://www.tensorflow.org/install) for install instructions) to convert

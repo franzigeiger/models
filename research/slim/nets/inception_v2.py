@@ -18,12 +18,14 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+import tf_slim as slim
 
 from nets import inception_utils
 
-slim = tf.contrib.slim
-trunc_normal = lambda stddev: tf.truncated_normal_initializer(0.0, stddev)
+# pylint: disable=g-long-lambda
+trunc_normal = lambda stddev: tf.truncated_normal_initializer(
+    0.0, stddev)
 
 
 def inception_v2_base(inputs,
@@ -524,7 +526,8 @@ def inception_v2(inputs,
     raise ValueError('depth_multiplier is not greater than zero.')
 
   # Final pooling and prediction
-  with tf.variable_scope(scope, 'InceptionV2', [inputs], reuse=reuse) as scope:
+  with tf.variable_scope(
+      scope, 'InceptionV2', [inputs], reuse=reuse) as scope:
     with slim.arg_scope([slim.batch_norm, slim.dropout],
                         is_training=is_training):
       net, end_points = inception_v2_base(
@@ -533,7 +536,8 @@ def inception_v2(inputs,
       with tf.variable_scope('Logits'):
         if global_pool:
           # Global average pooling.
-          net = tf.reduce_mean(net, [1, 2], keep_dims=True, name='global_pool')
+          net = tf.reduce_mean(
+              input_tensor=net, axis=[1, 2], keepdims=True, name='global_pool')
           end_points['global_pool'] = net
         else:
           # Pooling with a fixed kernel size.
@@ -545,6 +549,7 @@ def inception_v2(inputs,
           return net, end_points
         # 1 x 1 x 1024
         net = slim.dropout(net, keep_prob=dropout_keep_prob, scope='Dropout_1b')
+        end_points['PreLogits'] = net
         logits = slim.conv2d(net, num_classes, [1, 1], activation_fn=None,
                              normalizer_fn=None, scope='Conv2d_1c_1x1')
         if spatial_squeeze:

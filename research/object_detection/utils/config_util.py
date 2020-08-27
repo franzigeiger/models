@@ -19,7 +19,7 @@ from __future__ import division
 from __future__ import print_function
 
 import os
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 from google.protobuf import text_format
 
@@ -46,12 +46,13 @@ def get_image_resizer_config(model_config):
     ValueError: If the model type is not recognized.
   """
   meta_architecture = model_config.WhichOneof("model")
-  if meta_architecture == "faster_rcnn":
-    return model_config.faster_rcnn.image_resizer
-  if meta_architecture == "ssd":
-    return model_config.ssd.image_resizer
+  meta_architecture_config = getattr(model_config, meta_architecture)
 
-  raise ValueError("Unknown model type: {}".format(meta_architecture))
+  if hasattr(meta_architecture_config, "image_resizer"):
+    return getattr(meta_architecture_config, "image_resizer")
+  else:
+    raise ValueError("{} has no image_reszier_config".format(
+        meta_architecture))
 
 
 def get_spatial_image_size(image_resizer_config):
@@ -84,6 +85,40 @@ def get_spatial_image_size(image_resizer_config):
   raise ValueError("Unknown image resizer type.")
 
 
+def get_max_num_context_features(model_config):
+  """Returns maximum number of context features from a given config.
+
+  Args:
+    model_config: A model config file.
+
+  Returns:
+    An integer specifying the max number of context features if the model
+      config contains context_config, None otherwise
+
+  """
+  meta_architecture = model_config.WhichOneof("model")
+  meta_architecture_config = getattr(model_config, meta_architecture)
+
+  if hasattr(meta_architecture_config, "context_config"):
+    return meta_architecture_config.context_config.max_num_context_features
+
+
+def get_context_feature_length(model_config):
+  """Returns context feature length from a given config.
+
+  Args:
+    model_config: A model config file.
+
+  Returns:
+    An integer specifying the fixed length of each feature in context_features.
+  """
+  meta_architecture = model_config.WhichOneof("model")
+  meta_architecture_config = getattr(model_config, meta_architecture)
+
+  if hasattr(meta_architecture_config, "context_config"):
+    return meta_architecture_config.context_config.context_feature_length
+
+
 def get_configs_from_pipeline_file(pipeline_config_path, config_override=None):
   """Reads config from a file containing pipeline_pb2.TrainEvalPipelineConfig.
 
@@ -105,6 +140,35 @@ def get_configs_from_pipeline_file(pipeline_config_path, config_override=None):
   if config_override:
     text_format.Merge(config_override, pipeline_config)
   return create_configs_from_pipeline_proto(pipeline_config)
+
+
+def clear_fine_tune_checkpoint(pipeline_config_path,
+                               new_pipeline_config_path):
+  """Clears fine_tune_checkpoint and writes a new pipeline config file."""
+  configs = get_configs_from_pipeline_file(pipeline_config_path)
+  configs["train_config"].fine_tune_checkpoint = ""
+  configs["train_config"].load_all_detection_checkpoint_vars = False
+  pipeline_proto = create_pipeline_proto_from_configs(configs)
+  with tf.gfile.Open(new_pipeline_config_path, "wb") as f:
+    f.write(text_format.MessageToString(pipeline_proto))
+
+
+def update_fine_tune_checkpoint_type(train_config):
+  """Set `fine_tune_checkpoint_type` using `from_detection_checkpoint`.
+
+  `train_config.from_detection_checkpoint` field is deprecated. For backward
+  compatibility, this function sets `train_config.fine_tune_checkpoint_type`
+  based on `train_config.from_detection_checkpoint`.
+
+  Args:
+    train_config: train_pb2.TrainConfig proto object.
+
+  """
+  if not train_config.fine_tune_checkpoint_type:
+    if train_config.from_detection_checkpoint:
+      train_config.fine_tune_checkpoint_type = "detection"
+    else:
+      train_config.fine_tune_checkpoint_type = "classification"
 
 
 def create_configs_from_pipeline_proto(pipeline_config):
@@ -263,12 +327,12 @@ def get_number_of_classes(model_config):
     ValueError: If the model type is not recognized.
   """
   meta_architecture = model_config.WhichOneof("model")
-  if meta_architecture == "faster_rcnn":
-    return model_config.faster_rcnn.num_classes
-  if meta_architecture == "ssd":
-    return model_config.ssd.num_classes
+  meta_architecture_config = getattr(model_config, meta_architecture)
 
-  raise ValueError("Expected the model to be one of 'faster_rcnn' or 'ssd'.")
+  if hasattr(meta_architecture_config, "num_classes"):
+    return meta_architecture_config.num_classes
+  else:
+    raise ValueError("{} does not have num_classes.".format(meta_architecture))
 
 
 def get_optimizer_type(train_config):
@@ -552,6 +616,11 @@ def _maybe_update_config_with_key_value(configs, key, value):
     _update_retain_original_images(configs["eval_config"], value)
   elif field_name == "use_bfloat16":
     _update_use_bfloat16(configs, value)
+  elif field_name == "retain_original_image_additional_channels_in_eval":
+    _update_retain_original_image_additional_channels(configs["eval_config"],
+                                                      value)
+  elif field_name == "num_classes":
+    _update_num_classes(configs["model"], value)
   else:
     return False
   return True
@@ -882,6 +951,8 @@ def _update_label_map_path(configs, label_map_path):
   _update_all_eval_input_configs(configs, "label_map_path", label_map_path)
 
 
+
+
 def _update_mask_type(configs, mask_type):
   """Updates the mask type for both train and eval input readers.
 
@@ -935,3 +1006,70 @@ def _update_use_bfloat16(configs, use_bfloat16):
     use_bfloat16: A bool, indicating whether to use bfloat16 for training.
   """
   configs["train_config"].use_bfloat16 = use_bfloat16
+
+
+def _update_retain_original_image_additional_channels(
+    eval_config,
+    retain_original_image_additional_channels):
+  """Updates eval config to retain original image additional channels or not.
+
+  The eval_config object is updated in place, and hence not returned.
+
+  Args:
+    eval_config: A eval_pb2.EvalConfig.
+    retain_original_image_additional_channels: Boolean indicating whether to
+      retain original image additional channels in eval mode.
+  """
+  eval_config.retain_original_image_additional_channels = (
+      retain_original_image_additional_channels)
+
+
+def remove_unecessary_ema(variables_to_restore, no_ema_collection=None):
+  """Remap and Remove EMA variable that are not created during training.
+
+  ExponentialMovingAverage.variables_to_restore() returns a map of EMA names
+  to tf variables to restore. E.g.:
+  {
+      conv/batchnorm/gamma/ExponentialMovingAverage: conv/batchnorm/gamma,
+      conv_4/conv2d_params/ExponentialMovingAverage: conv_4/conv2d_params,
+      global_step: global_step
+  }
+  This function takes care of the extra ExponentialMovingAverage variables
+  that get created during eval but aren't available in the checkpoint, by
+  remapping the key to the shallow copy of the variable itself, and remove
+  the entry of its EMA from the variables to restore. An example resulting
+  dictionary would look like:
+  {
+      conv/batchnorm/gamma: conv/batchnorm/gamma,
+      conv_4/conv2d_params: conv_4/conv2d_params,
+      global_step: global_step
+  }
+  Args:
+    variables_to_restore: A dictionary created by ExponentialMovingAverage.
+      variables_to_restore().
+    no_ema_collection: A list of namescope substrings to match the variables
+      to eliminate EMA.
+
+  Returns:
+    A variables_to_restore dictionary excluding the collection of unwanted
+    EMA mapping.
+  """
+  if no_ema_collection is None:
+    return variables_to_restore
+
+  for key in variables_to_restore:
+    if "ExponentialMovingAverage" in key:
+      for name in no_ema_collection:
+        if name in key:
+          variables_to_restore[key.replace("/ExponentialMovingAverage",
+                                           "")] = variables_to_restore[key]
+          del variables_to_restore[key]
+  return variables_to_restore
+
+
+def _update_num_classes(model_config, num_classes):
+  meta_architecture = model_config.WhichOneof("model")
+  if meta_architecture == "faster_rcnn":
+    model_config.faster_rcnn.num_classes = num_classes
+  if meta_architecture == "ssd":
+    model_config.ssd.num_classes = num_classes

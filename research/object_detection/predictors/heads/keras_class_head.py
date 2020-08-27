@@ -19,7 +19,7 @@ Contains Class prediction head classes for different meta architectures.
 All the class prediction heads have a predict function that receives the
 `features` as the first argument and returns class predictions with background.
 """
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 from object_detection.predictors.heads import head
 
@@ -71,7 +71,11 @@ class ConvolutionalClassHead(head.KerasHead):
 
     Raises:
       ValueError: if min_depth > max_depth.
+      ValueError: if use_depthwise is True and kernel_size is 1.
     """
+    if use_depthwise and (kernel_size == 1):
+      raise ValueError('Should not use 1x1 kernel when using depthwise conv')
+
     super(ConvolutionalClassHead, self).__init__(name=name)
     self._is_training = is_training
     self._use_dropout = use_dropout
@@ -274,7 +278,13 @@ class WeightSharedConvolutionalClassHead(head.KerasHead):
         num_class_slots].
       name: A string name scope to assign to the model. If `None`, Keras
         will auto-generate one from the class name.
+
+    Raises:
+      ValueError: if use_depthwise is True and kernel_size is 1.
     """
+    if use_depthwise and (kernel_size == 1):
+      raise ValueError('Should not use 1x1 kernel when using depthwise conv')
+
     super(WeightSharedConvolutionalClassHead, self).__init__(name=name)
     self._num_class_slots = num_class_slots
     self._kernel_size = kernel_size

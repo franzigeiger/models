@@ -38,6 +38,11 @@ flags.DEFINE_string(
     "init_checkpoint",
     default=None,
     help="Checkpoint path for initializing the model.")
+flags.DEFINE_bool(
+    "init_from_transformerxl",
+    default=False,
+    help="Init from a transformerxl model checkpoint. Otherwise, init from the "
+    "entire model checkpoint.")
 
 # Optimization config
 flags.DEFINE_float("learning_rate", default=1e-4, help="Maximum learning rate.")
@@ -123,8 +128,6 @@ flags.DEFINE_float(
     "init_range", default=0.1, help="Initialization std when init is uniform.")
 
 flags.DEFINE_integer(
-    "train_data_size", default=130738, help="Number of training data samples.")
-flags.DEFINE_integer(
     "test_data_size", default=12048, help="Number of test data samples.")
 flags.DEFINE_string(
     "train_tfrecord_path",
@@ -139,5 +142,5 @@ flags.DEFINE_integer(
     default=16,
     help="Size of the test batch across all hosts.")
 flags.DEFINE_integer(
-    "save_steps", default=None, help="Number of steps for saving checkpoint.")
+    "save_steps", default=1000, help="Number of steps for saving checkpoint.")
 FLAGS = flags.FLAGS

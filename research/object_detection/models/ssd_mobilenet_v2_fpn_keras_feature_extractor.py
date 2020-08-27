@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,7 +16,12 @@
 
 """SSD Keras-based MobilenetV2 FPN Feature Extractor."""
 
-import tensorflow as tf
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+
+from six.moves import range
+import tensorflow.compat.v1 as tf
 
 from object_detection.meta_architectures import ssd_meta_arch
 from object_detection.models import feature_map_generators
@@ -52,6 +58,7 @@ class SSDMobileNetV2FpnKerasFeatureExtractor(
                reuse_weights=None,
                use_explicit_padding=False,
                use_depthwise=False,
+               use_native_resize_op=False,
                override_base_feature_extractor_hyperparams=False,
                name=None):
     """SSD Keras based FPN feature extractor Mobilenet v2 architecture.
@@ -87,6 +94,8 @@ class SSDMobileNetV2FpnKerasFeatureExtractor(
       use_explicit_padding: Whether to use explicit padding when extracting
         features. Default is False.
       use_depthwise: Whether to use depthwise convolutions. Default is False.
+      use_native_resize_op: Whether to use tf.image.nearest_neighbor_resize
+        to do upsampling in FPN. Default is false.
       override_base_feature_extractor_hyperparams: Whether to override
         hyperparameters of the base feature extractor with the one from
         `conv_hyperparams`.
@@ -112,8 +121,9 @@ class SSDMobileNetV2FpnKerasFeatureExtractor(
     self._conv_defs = None
     if self._use_depthwise:
       self._conv_defs = _create_modified_mobilenet_config()
+    self._use_native_resize_op = use_native_resize_op
     self._feature_blocks = ['layer_4', 'layer_7', 'layer_14', 'layer_19']
-    self._mobilenet_v2 = None
+    self.classification_backbone = None
     self._fpn_features_generator = None
     self._coarse_feature_layers = []
 
@@ -137,7 +147,7 @@ class SSDMobileNetV2FpnKerasFeatureExtractor(
       outputs.append(full_mobilenet_v2.get_layer(output_layer_name).output)
     layer_19 = full_mobilenet_v2.get_layer(name='out_relu').output
     outputs.append(layer_19)
-    self._mobilenet_v2 = tf.keras.Model(
+    self.classification_backbone = tf.keras.Model(
         inputs=full_mobilenet_v2.inputs,
         outputs=outputs)
     # pylint:disable=g-long-lambda
@@ -151,6 +161,7 @@ class SSDMobileNetV2FpnKerasFeatureExtractor(
             depth=self._depth_fn(self._additional_layer_depth),
             use_depthwise=self._use_depthwise,
             use_explicit_padding=self._use_explicit_padding,
+            use_native_resize_op=self._use_native_resize_op,
             is_training=self._is_training,
             conv_hyperparams=self._conv_hyperparams,
             freeze_batchnorm=self._freeze_batchnorm,
@@ -205,7 +216,7 @@ class SSDMobileNetV2FpnKerasFeatureExtractor(
     preprocessed_inputs = shape_utils.check_min_image_dim(
         33, preprocessed_inputs)
 
-    image_features = self._mobilenet_v2(
+    image_features = self.classification_backbone(
         ops.pad_to_multiple(preprocessed_inputs, self._pad_to_multiple))
 
     feature_block_list = []

@@ -38,7 +38,7 @@ from abc import abstractmethod
 
 import six
 from six.moves import zip
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 
 class AnchorGenerator(six.with_metaclass(ABCMeta, object)):
@@ -129,6 +129,23 @@ class AnchorGenerator(six.with_metaclass(ABCMeta, object)):
         boxes.
     """
     pass
+
+  def anchor_index_to_feature_map_index(self, boxlist_list):
+    """Returns a 1-D array of feature map indices for each anchor.
+
+    Args:
+      boxlist_list: a list of Boxlist, each holding a collection of N anchor
+        boxes. This list is produced in self.generate().
+
+    Returns:
+      A [num_anchors] integer array, where each element indicates which feature
+      map index the anchor belongs to.
+    """
+    feature_map_indices_list = []
+    for i, boxes in enumerate(boxlist_list):
+      feature_map_indices_list.append(
+          i * tf.ones([boxes.num_boxes()], dtype=tf.int32))
+    return tf.concat(feature_map_indices_list, axis=0)
 
   def _assert_correct_number_of_anchors(self, anchors_list,
                                         feature_map_shape_list):

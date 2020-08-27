@@ -1,100 +1,182 @@
-This folder contains the Keras implementation of the ResNet models. For more
-information about the models, please refer to this [README file](../../README.md).
+# Image Classification
 
-Similar to the [estimator implementation](../../r1/resnet), the Keras
-implementation has code for both CIFAR-10 data and ImageNet data. The CIFAR-10
-version uses a ResNet56 model implemented in
-[`resnet_cifar_model.py`](./resnet_cifar_model.py), and the ImageNet version
-uses a ResNet50 model implemented in [`resnet_model.py`](./resnet_model.py).
+This folder contains TF 2.0 model examples for image classification:
 
-To use
-either dataset, make sure that you have the latest version of TensorFlow
+* [MNIST](#mnist)
+* [Classifier Trainer](#classifier-trainer), a framework that uses the Keras
+compile/fit methods for image classification models, including:
+  * ResNet
+  * EfficientNet[^1]
+
+[^1]: Currently a work in progress. We cannot match "AutoAugment (AA)" in [the original version](https://github.com/tensorflow/tpu/tree/master/models/official/efficientnet).
+For more information about other types of models, please refer to this
+[README file](../../README.md).
+
+## Before you begin
+Please make sure that you have the latest version of TensorFlow
 installed and
-[add the models folder to your Python path](/official/#running-the-models),
-otherwise you may encounter an error like `ImportError: No module named
-official.resnet`.
+[add the models folder to your Python path](/official/#running-the-models).
 
-## CIFAR-10
+### ImageNet preparation
 
-Download and extract the CIFAR-10 data. You can use the following script:
-```bash
-python ../../r1/resnet/cifar10_download_and_extract.py
-```
+#### Using TFDS
+`classifier_trainer.py` supports ImageNet with
+[TensorFlow Datasets (TFDS)](https://www.tensorflow.org/datasets/overview).
 
-After you download the data, you can run the program by:
+Please see the following [example snippet](https://github.com/tensorflow/datasets/blob/master/tensorflow_datasets/scripts/download_and_prepare.py)
+for more information on how to use TFDS to download and prepare datasets, and
+specifically the [TFDS ImageNet readme](https://github.com/tensorflow/datasets/blob/master/docs/catalog/imagenet2012.md)
+for manual download instructions.
 
-```bash
-python resnet_cifar_main.py
-```
-
-If you did not use the default directory to download the data, specify the
-location with the `--data_dir` flag, like:
-
-```bash
-python resnet_cifar_main.py --data_dir=/path/to/cifar
-```
-
-## ImageNet
-
+#### Legacy TFRecords
 Download the ImageNet dataset and convert it to TFRecord format.
 The following [script](https://github.com/tensorflow/tpu/blob/master/tools/datasets/imagenet_to_gcs.py)
 and [README](https://github.com/tensorflow/tpu/tree/master/tools/datasets#imagenet_to_gcspy)
 provide a few options.
 
-Once your dataset is ready, you can begin training the model as follows:
+Note that the legacy ResNet runners, e.g. [resnet/resnet_ctl_imagenet_main.py](resnet/resnet_ctl_imagenet_main.py)
+require TFRecords whereas `classifier_trainer.py` can use both by setting the
+builder to 'records' or 'tfds' in the configurations.
+
+### Running on Cloud TPUs
+
+Note: These models will **not** work with TPUs on Colab.
+
+You can train image classification models on Cloud TPUs using
+[tf.distribute.experimental.TPUStrategy](https://www.tensorflow.org/api_docs/python/tf/distribute/experimental/TPUStrategy?version=nightly).
+If you are not familiar with Cloud TPUs, it is strongly recommended that you go
+through the
+[quickstart](https://cloud.google.com/tpu/docs/quickstart) to learn how to
+create a TPU and GCE VM.
+
+### Running on multiple GPU hosts
+
+You can also train these models on multiple hosts, each with GPUs, using
+[tf.distribute.experimental.MultiWorkerMirroredStrategy](https://www.tensorflow.org/api_docs/python/tf/distribute/experimental/MultiWorkerMirroredStrategy).
+
+The easiest way to run multi-host benchmarks is to set the
+[`TF_CONFIG`](https://www.tensorflow.org/guide/distributed_training#TF_CONFIG)
+appropriately at each host.  e.g., to run using `MultiWorkerMirroredStrategy` on
+2 hosts, the `cluster` in `TF_CONFIG` should have 2 `host:port` entries, and
+host `i` should have the `task` in `TF_CONFIG` set to `{"type": "worker",
+"index": i}`.  `MultiWorkerMirroredStrategy` will automatically use all the
+available GPUs at each host.
+
+## MNIST
+
+To download the data and run the MNIST sample model locally for the first time,
+run one of the following command:
 
 ```bash
-python resnet_imagenet_main.py
+python3 mnist_main.py \
+  --model_dir=$MODEL_DIR \
+  --data_dir=$DATA_DIR \
+  --train_epochs=10 \
+  --distribution_strategy=one_device \
+  --num_gpus=$NUM_GPUS \
+  --download
 ```
 
-Again, if you did not download the data to the default directory, specify the
-location with the `--data_dir` flag:
+To train the model on a Cloud TPU, run the following command:
 
 ```bash
-python resnet_imagenet_main.py --data_dir=/path/to/imagenet
+python3 mnist_main.py \
+  --tpu=$TPU_NAME \
+  --model_dir=$MODEL_DIR \
+  --data_dir=$DATA_DIR \
+  --train_epochs=10 \
+  --distribution_strategy=tpu \
+  --download
 ```
 
-There are more flag options you can specify. Here are some examples:
+Note: the `--download` flag is only required the first time you run the model.
 
-- `--use_synthetic_data`: when set to true, synthetic data, rather than real
-data, are used;
-- `--batch_size`: the batch size used for the model;
-- `--model_dir`: the directory to save the model checkpoint;
-- `--train_epochs`: number of epoches to run for training the model;
-- `--train_steps`: number of steps to run for training the model. We now only
-support a number that is smaller than the number of batches in an epoch.
-- `--skip_eval`: when set to true, evaluation as well as validation during
-training is skipped
 
-For example, this is a typical command line to run with ImageNet data with
-batch size 128 per GPU:
+## Classifier Trainer
+The classifier trainer is a unified framework for running image classification
+models using Keras's compile/fit methods. Experiments should be provided in the
+form of YAML files, some examples are included within the configs/examples
+folder. Please see [configs/examples](./configs/examples) for more example
+configurations.
 
+The provided configuration files use a per replica batch size and is scaled
+by the number of devices. For instance, if `batch size` = 64, then for 1 GPU
+the global batch size would be 64 * 1 = 64. For 8 GPUs, the global batch size
+would be 64 * 8 = 512. Similarly, for a v3-8 TPU, the global batch size would
+be 64 * 8 = 512, and for a v3-32, the global batch size is 64 * 32 = 2048.
+
+### ResNet50
+
+#### On GPU:
 ```bash
-python -m resnet_imagenet_main \
-    --model_dir=/tmp/model_dir/something \
-    --num_gpus=2 \
-    --batch_size=128 \
-    --train_epochs=90 \
-    --train_steps=10 \
-    --use_synthetic_data=false
+python3 classifier_trainer.py \
+  --mode=train_and_eval \
+  --model_type=resnet \
+  --dataset=imagenet \
+  --model_dir=$MODEL_DIR \
+  --data_dir=$DATA_DIR \
+  --config_file=configs/examples/resnet/imagenet/gpu.yaml \
+  --params_override='runtime.num_gpus=$NUM_GPUS'
 ```
 
-See [`common.py`](common.py) for full list of options.
+To train on multiple hosts, each with GPUs attached using
+[MultiWorkerMirroredStrategy](https://www.tensorflow.org/api_docs/python/tf/distribute/experimental/MultiWorkerMirroredStrategy)
+please update `runtime` section in gpu.yaml
+(or override using `--params_override`) with:
 
-## Using multiple GPUs
-You can train these models on multiple GPUs using `tf.distribute.Strategy` API.
-You can read more about them in this
-[guide](https://www.tensorflow.org/guide/distribute_strategy).
+```YAML
+# gpu.yaml
+runtime:
+  distribution_strategy: 'multi_worker_mirrored'
+  worker_hosts: '$HOST1:port,$HOST2:port'
+  num_gpus: $NUM_GPUS
+  task_index: 0
+```
+By having `task_index: 0` on the first host and `task_index: 1` on the second
+and so on. `$HOST1` and `$HOST2` are the IP addresses of the hosts, and `port`
+can be chosen any free port on the hosts. Only the first host will write
+TensorBoard Summaries and save checkpoints.
 
-In this example, we have made it easier to use is with just a command line flag
-`--num_gpus`. By default this flag is 1 if TensorFlow is compiled with CUDA,
-and 0 otherwise.
+#### On TPU:
+```bash
+python3 classifier_trainer.py \
+  --mode=train_and_eval \
+  --model_type=resnet \
+  --dataset=imagenet \
+  --tpu=$TPU_NAME \
+  --model_dir=$MODEL_DIR \
+  --data_dir=$DATA_DIR \
+  --config_file=configs/examples/resnet/imagenet/tpu.yaml
+```
 
-- --num_gpus=0: Uses tf.distribute.OneDeviceStrategy with CPU as the device.
-- --num_gpus=1: Uses tf.distribute.OneDeviceStrategy with GPU as the device.
-- --num_gpus=2+: Uses tf.distribute.MirroredStrategy to run synchronous
-distributed training across the GPUs.
+### EfficientNet
+**Note: EfficientNet development is a work in progress.**
+#### On GPU:
+```bash
+python3 classifier_trainer.py \
+  --mode=train_and_eval \
+  --model_type=efficientnet \
+  --dataset=imagenet \
+  --model_dir=$MODEL_DIR \
+  --data_dir=$DATA_DIR \
+  --config_file=configs/examples/efficientnet/imagenet/efficientnet-b0-gpu.yaml \
+  --params_override='runtime.num_gpus=$NUM_GPUS'
+```
 
-If you wish to run without `tf.distribute.Strategy`, you can do so by setting
-`--distribution_strategy=off`.
+
+#### On TPU:
+```bash
+python3 classifier_trainer.py \
+  --mode=train_and_eval \
+  --model_type=efficientnet \
+  --dataset=imagenet \
+  --tpu=$TPU_NAME \
+  --model_dir=$MODEL_DIR \
+  --data_dir=$DATA_DIR \
+  --config_file=configs/examples/efficientnet/imagenet/efficientnet-b0-tpu.yaml
+```
+
+Note that the number of GPU devices can be overridden in the command line using
+`--params_overrides`. The TPU does not need this override as the device is fixed
+by providing the TPU address or name with the `--tpu` flag.
 

@@ -12,8 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""XLNet classification finetuning runner in tf2.0."""
-
+"""XLNet training utils."""
 from __future__ import absolute_import
 from __future__ import division
 # from __future__ import google_type_annotations
@@ -27,10 +26,11 @@ from absl import logging
 # pytype: disable=attribute-error
 # pylint: disable=g-bare-generic,unused-import
 import tensorflow as tf
-from official.modeling import model_training_utils
-from official.nlp.xlnet import data_utils
-from official.nlp import xlnet_modeling as modeling
 from typing import Any, Callable, Dict, Text, Optional
+
+from official.nlp.bert import model_training_utils
+from official.nlp.xlnet import data_utils
+from official.nlp.xlnet import xlnet_modeling as modeling
 
 _MIN_SUMMARY_STEPS = 10
 
@@ -49,34 +49,20 @@ def _float_metric_value(metric):
   return metric.result().numpy().astype(float)
 
 
-def _steps_to_run(current_step, steps_per_epoch, steps_per_loop):
-  """Calculates steps to run on device."""
-  if steps_per_loop <= 0:
-    raise ValueError("steps_per_loop should be positive integer.")
-  if steps_per_loop == 1:
-    return steps_per_loop
-  remainder_in_epoch = current_step % steps_per_epoch
-  if remainder_in_epoch != 0:
-    return min(steps_per_epoch - remainder_in_epoch, steps_per_loop)
-  else:
-    return steps_per_loop
-
-
 def train(
     strategy: tf.distribute.Strategy,
     model_fn: Callable,
     input_meta_data: Dict,
     train_input_fn: Callable,
     total_training_steps: int,
-    steps_per_epoch: int,
     steps_per_loop: int,
     optimizer: tf.keras.optimizers.Optimizer,
     learning_rate_fn: tf.keras.optimizers.schedules.LearningRateSchedule,
     eval_fn: Optional[Callable[[tf.keras.Model, int, tf.summary.SummaryWriter],
                                Any]] = None,
     metric_fn: Optional[Callable[[], tf.keras.metrics.Metric]] = None,
-    test_input_fn: Optional[Callable] = None,
     init_checkpoint: Optional[Text] = None,
+    init_from_transformerxl: Optional[bool] = False,
     model_dir: Optional[Text] = None,
     save_steps: Optional[int] = None,
     run_eagerly: Optional[bool] = False):
@@ -89,9 +75,6 @@ def train(
         `n_layer`, `batch_size_per_core` and `d_model`.
       train_input_fn: Function returns a tf.data.Dataset used for training.
       total_training_steps: Number of steps to train in total.
-      steps_per_epoch: Number of steps to run per epoch. At the end of each
-        epoch, model checkpoint will be saved and evaluation will be conducted
-        if evaluation dataset is provided.
       steps_per_loop: Number of steps per graph-mode loop. In order to reduce
         communication in eager context, training logs are printed every
         steps_per_loop.
@@ -102,13 +85,14 @@ def train(
       metric_fn: A metrics function returns a Keras Metric object to record
         evaluation result using evaluation dataset or with training dataset
         after every epoch.
-      test_input_fn:  Function returns a evaluation dataset. If none, evaluation
-        is skipped.
       init_checkpoint: Optional checkpoint to load to `sub_model` returned by
+        `model_fn`.
+      init_from_transformerxl: Whether to load to `transformerxl_model` of
         `model_fn`.
       model_dir: The directory of model (checkpoints, summaries).
       save_steps: The frequency to save checkpoints. Every save_steps, we save a
-        model checkpoint.
+        model checkpoint. Model checkpoint will be saved and evaluation will be
+        conducted if evaluation dataset is provided.
       run_eagerly: Whether to run training eagerly.
 
   Returns:
@@ -117,37 +101,43 @@ def train(
     TypeError: if model directory is not specified.
   """
   required_arguments = [
-      train_input_fn, total_training_steps, steps_per_epoch, steps_per_loop,
-      optimizer, learning_rate_fn
+      train_input_fn, total_training_steps, steps_per_loop, optimizer,
+      learning_rate_fn, save_steps
   ]
   if [arg for arg in required_arguments if arg is None]:
     raise ValueError("`train_input_fn`, `total_training_steps`, "
-                     "`steps_per_epoch`, `steps_per_loop`, `optimizer` and "
+                     "`steps_per_loop`, `optimizer`, `save_steps` and "
                      "`learning_rate_fn` are required parameters.")
   if not model_dir:
     raise TypeError("Model directory must be specified.")
-  # pylint: disable=protected-access
-  train_iterator = data_utils._get_input_iterator(train_input_fn, strategy)
-  # pylint: enable=protected-access
-  train_summary_writer = None
-  eval_summary_writer = None
+  train_iterator = data_utils.get_input_iterator(train_input_fn, strategy)
   if not tf.io.gfile.exists(model_dir):
     tf.io.gfile.mkdir(model_dir)
-  if test_input_fn:
+  # Create summary writers
+  summary_dir = os.path.join(model_dir, "summaries")
+  if not tf.io.gfile.exists(summary_dir):
+    tf.io.gfile.mkdir(summary_dir)
+  train_summary_writer = None
+  eval_summary_writer = None
+  if eval_fn:
     eval_summary_writer = tf.summary.create_file_writer(
-        os.path.join(model_dir, "summaries/eval"))
+        os.path.join(summary_dir, "eval"))
   if steps_per_loop >= _MIN_SUMMARY_STEPS:
     # Only writes summary when the stats are collected sufficiently over
     # enough steps.
     train_summary_writer = tf.summary.create_file_writer(
-        os.path.join(model_dir, "summaries/train"))
+        os.path.join(summary_dir, "train"))
 
   with strategy.scope():
     model = model_fn()
 
     if init_checkpoint:
       logging.info("restore from %s", init_checkpoint)
-      checkpoint = tf.train.Checkpoint(model=model)
+      if init_from_transformerxl:
+        checkpoint = tf.train.Checkpoint(
+            transformer_xl=model.transformerxl_model)
+      else:
+        checkpoint = tf.train.Checkpoint(model=model)
       checkpoint.restore(init_checkpoint)
 
     model.optimizer = optimizer
@@ -232,16 +222,16 @@ def train(
         return mems
 
       if input_meta_data["mem_len"] > 0:
-        mem = strategy.experimental_run_v2(cache_fn)
+        mem = strategy.run(cache_fn)
         for _ in tf.range(steps):
-          mem = strategy.experimental_run_v2(
+          mem = strategy.run(
               _replicated_step, args=(
                   next(iterator),
                   mem,
               ))
       else:
         for _ in tf.range(steps):
-          strategy.experimental_run_v2(_replicated_step, args=(next(iterator),))
+          strategy.run(_replicated_step, args=(next(iterator),))
 
     if not run_eagerly:
       train_steps = tf.function(train_steps)
@@ -263,7 +253,8 @@ def train(
       if train_metric:
         train_metric.reset_states()
 
-      steps = _steps_to_run(current_step, steps_per_epoch, steps_per_loop)
+      steps = model_training_utils.steps_to_run(current_step, save_steps,
+                                                steps_per_loop)
       train_steps(train_iterator, tf.convert_to_tensor(steps, dtype=tf.int32))
       current_step += steps
       train_loss = _float_metric_value(train_loss_metric)
@@ -288,13 +279,11 @@ def train(
                 _float_metric_value(train_metric),
                 step=current_step)
           train_summary_writer.flush()
-      if model_dir:
-        if (save_steps is None) or (save_steps and
-                                    current_step % save_steps == 0):
-          _save_checkpoint(checkpoint, model_dir,
-                           checkpoint_name.format(step=current_step))
+      if model_dir and current_step % save_steps == 0:
+        _save_checkpoint(checkpoint, model_dir,
+                         checkpoint_name.format(step=current_step))
 
-      if test_input_fn and current_step % steps_per_epoch == 0:
+      if eval_fn and current_step % save_steps == 0:
 
         logging.info("Running evaluation after step: %s.", current_step)
 
@@ -302,7 +291,7 @@ def train(
     if model_dir:
       _save_checkpoint(checkpoint, model_dir,
                        checkpoint_name.format(step=current_step))
-    if test_input_fn:
+    if eval_fn:
       logging.info("Running final evaluation after training is complete.")
       eval_metric = eval_fn(model, current_step, eval_summary_writer)
 
@@ -312,10 +301,10 @@ def train(
     }
     if train_metric:
       training_summary["last_train_metrics"] = _float_metric_value(train_metric)
-    if test_input_fn:
+    if eval_fn:
       # eval_metric is supposed to be a float.
       training_summary["eval_metrics"] = eval_metric
 
-    model_training_utils.write_txt_summary(training_summary, model_dir)
+    model_training_utils.write_txt_summary(training_summary, summary_dir)
 
     return model

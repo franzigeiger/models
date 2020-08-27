@@ -34,7 +34,7 @@ Some other notes:
   * Tensors are always provided as (flat) [N, 4] tensors.
 """
 
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 from object_detection.utils import shape_utils
 
@@ -53,7 +53,8 @@ class BoxList(object):
           float32 format.
     """
     if len(boxes.get_shape()) != 2 or boxes.get_shape()[-1] != 4:
-      raise ValueError('Invalid dimensions for box data.')
+      raise ValueError('Invalid dimensions for box data: {}'.format(
+          boxes.shape))
     if boxes.dtype != tf.float32:
       raise ValueError('Invalid tensor type: should be tf.float32')
     self.data = {'boxes': boxes}

@@ -20,6 +20,7 @@ from __future__ import division
 from __future__ import print_function
 
 import functools
+# Import libraries
 from absl import app
 from absl import flags
 from absl import logging
@@ -27,22 +28,29 @@ from absl import logging
 import numpy as np
 import tensorflow as tf
 # pylint: disable=unused-import
-from official.nlp import xlnet_config
-from official.nlp import xlnet_modeling as modeling
 from official.nlp.xlnet import common_flags
 from official.nlp.xlnet import data_utils
 from official.nlp.xlnet import optimization
 from official.nlp.xlnet import training_utils
+from official.nlp.xlnet import xlnet_config
+from official.nlp.xlnet import xlnet_modeling as modeling
 from official.utils.misc import tpu_lib
 
 flags.DEFINE_integer("n_class", default=2, help="Number of classes.")
+flags.DEFINE_string(
+    "summary_type",
+    default="last",
+    help="Method used to summarize a sequence into a vector.")
 
 FLAGS = flags.FLAGS
 
 
-def get_classificationxlnet_model(model_config, run_config, n_class):
+def get_classificationxlnet_model(model_config,
+                                  run_config,
+                                  n_class,
+                                  summary_type="last"):
   model = modeling.ClassificationXLNetModel(
-      model_config, run_config, n_class, name="model")
+      model_config, run_config, n_class, summary_type, name="model")
   return model
 
 
@@ -65,6 +73,7 @@ def run_evaluation(strategy,
       them when calculating the accuracy. For the reason that there will be
       dynamic-shape tensor, we first collect logits, labels and masks from TPU
       and calculate the accuracy via numpy locally.
+
   Returns:
     A float metric, accuracy.
   """
@@ -79,13 +88,11 @@ def run_evaluation(strategy,
   @tf.function
   def _run_evaluation(test_iterator):
     """Runs validation steps."""
-    logits, labels, masks = strategy.experimental_run_v2(
+    logits, labels, masks = strategy.run(
         _test_step_fn, args=(next(test_iterator),))
     return logits, labels, masks
 
-  # pylint: disable=protected-access
-  test_iterator = data_utils._get_input_iterator(test_input_fn, strategy)
-  # pylint: enable=protected-access
+  test_iterator = data_utils.get_input_iterator(test_input_fn, strategy)
   correct = 0
   total = 0
   for _ in range(eval_steps):
@@ -147,7 +154,6 @@ def main(unused_argv):
                                     strategy, False, FLAGS.test_tfrecord_path)
 
   total_training_steps = FLAGS.train_steps
-  steps_per_epoch = int(FLAGS.train_data_size / FLAGS.train_batch_size)
   steps_per_loop = FLAGS.iterations
   eval_steps = int(FLAGS.test_data_size / FLAGS.test_batch_size)
   eval_fn = functools.partial(run_evaluation, strategy, test_input_fn,
@@ -160,7 +166,7 @@ def main(unused_argv):
   model_config = xlnet_config.XLNetConfig(FLAGS)
   run_config = xlnet_config.create_run_config(True, False, FLAGS)
   model_fn = functools.partial(get_classificationxlnet_model, model_config,
-                               run_config, FLAGS.n_class)
+                               run_config, FLAGS.n_class, FLAGS.summary_type)
   input_meta_data = {}
   input_meta_data["d_model"] = FLAGS.d_model
   input_meta_data["mem_len"] = FLAGS.mem_len
@@ -177,17 +183,15 @@ def main(unused_argv):
       eval_fn=eval_fn,
       metric_fn=get_metric_fn,
       train_input_fn=train_input_fn,
-      test_input_fn=test_input_fn,
       init_checkpoint=FLAGS.init_checkpoint,
+      init_from_transformerxl=FLAGS.init_from_transformerxl,
       total_training_steps=total_training_steps,
-      steps_per_epoch=steps_per_epoch,
       steps_per_loop=steps_per_loop,
       optimizer=optimizer,
       learning_rate_fn=learning_rate_fn,
       model_dir=FLAGS.model_dir,
-      save_steps=1000)
+      save_steps=FLAGS.save_steps)
 
 
 if __name__ == "__main__":
-  assert tf.version.VERSION.startswith('2.')
   app.run(main)

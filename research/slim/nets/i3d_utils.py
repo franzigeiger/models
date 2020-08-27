@@ -19,13 +19,11 @@ from __future__ import division
 from __future__ import print_function
 
 import numpy as np
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+import tf_slim as slim
 
-
-# Orignaly, add_arg_scope = slim.add_arg_scope and layers = slim, now switch to
-# more update-to-date tf.contrib.* API.
-add_arg_scope = tf.contrib.framework.add_arg_scope
-layers = tf.contrib.layers
+add_arg_scope = slim.add_arg_scope
+layers = slim.layers
 
 
 def center_initializer():
